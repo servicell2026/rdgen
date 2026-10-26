@@ -1,0 +1,48 @@
+name: 'Download a draft-release asset'
+description: >
+  Downloads one asset, by name, from a release of this repository, identified
+  by its numeric id. Works for draft releases, which the tag-based endpoints
+  (and `gh release download`) cannot see. Used by the "release" delivery mode,
+  where the console that started the build is not reachable from the internet
+  and leaves its inputs on a draft release instead.
+inputs:
+  release_id:
+    description: 'Numeric id of the release'
+    required: true
+  name:
+    description: 'Asset file name'
+    required: true
+  output:
+    description: 'Path to write the file to'
+    required: true
+  token:
+    description: 'Token with contents:read on this repository'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download asset
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        RELEASE_ID: ${{ inputs.release_id }}
+        ASSET_NAME: ${{ inputs.name }}
+        OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        asset_id=""
+        for attempt in 1 2 3 4 5; do
+          asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --jq ".[] | select(.name == \"${ASSET_NAME}\") | .id" || true)
+          [ -n "$asset_id" ] && break
+          sleep $((attempt * 5))
+        done
+        if [ -z "$asset_id" ]; then
+          echo "Asset ${ASSET_NAME} not found on release ${RELEASE_ID}" >&2
+          exit 1
+        fi
+        mkdir -p "$(dirname "$OUTPUT")"
+        gh api -H "Accept: application/octet-stream" \
+          "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$OUTPUT"
+        echo "Downloaded ${ASSET_NAME} ($(wc -c < "$OUTPUT") bytes) to ${OUTPUT}"

@@ -19,6 +19,12 @@ on:
         default: ''
         type: string
 
+# contents: write lets "release" mode read its inputs from, and upload the
+# finished installers to, a draft release of this repository. actions: write
+# is what the cleanup job needs to delete the secrets artifact.
+permissions:
+  contents: write
+  actions: write
 
 env:
   SCITER_RUST_VERSION: "1.75" # https://github.com/rustdesk/rustdesk/discussions/7503, also 1.78 has ABI change which causes our sciter version not working, https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
@@ -455,6 +461,22 @@ jobs:
           path: C:\vcpkg\installed
           key: vcpkg-windows-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
           
+      - name: Fetch icon from draft release
+        if: ${{ env.iconlink_url != 'false' && env.rdgen == 'release' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Inline rather than ./.github/actions/release-asset: by this point the
+        # workspace holds the rustdesk checkout, not this repository.
+        run: |
+          set -euo pipefail
+          asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${{ env.release_id }}/assets" \
+            --jq '.[] | select(.name == "icon.png") | .id')
+          [ -n "$asset_id" ] || { echo "icon.png not found on the release" >&2; exit 1; }
+          mkdir -p "$(dirname "./res/iconx.png")"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "./res/iconx.png"
+
       - name: magick stuff
         if: ${{ env.iconlink_url != 'false' }}
         uses: nick-fields/retry@v3
@@ -464,7 +486,9 @@ jobs:
           retry_wait_seconds: 15
           shell: pwsh
           command: |
-            Invoke-WebRequest -Uri ${{ env.iconlink_url }}/get_png?filename=${{ env.iconlink_file }}"&"uuid=${{ env.iconlink_uuid }} -OutFile ./res/iconx.png 
+            if ($env:rdgen -ne 'release') {
+              Invoke-WebRequest -Uri ${{ env.iconlink_url }}/get_png?filename=${{ env.iconlink_file }}"&"uuid=${{ env.iconlink_uuid }} -OutFile ./res/iconx.png
+            }
             mv ./res/icon.ico ./res/icon.ico.bak
             mv ./res/icon.png ./res/icon.png.bak
             mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
@@ -622,8 +646,25 @@ jobs:
           magick ./res/icon.png -resize 48x48 ./rustdesk/data/flutter_assets/assets/icon.png
           cp ./res/icon.ico ./rustdesk/data/flutter_assets/assets/icon.ico
 
+      - name: Fetch logo from draft release
+        if: ${{ env.logolink_url != 'false' && env.rdgen == 'release' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Inline rather than ./.github/actions/release-asset: by this point the
+        # workspace holds the rustdesk checkout, not this repository.
+        run: |
+          set -euo pipefail
+          asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${{ env.release_id }}/assets" \
+            --jq '.[] | select(.name == "logo.png") | .id')
+          [ -n "$asset_id" ] || { echo "logo.png not found on the release" >&2; exit 1; }
+          mkdir -p "$(dirname "./rustdesk/data/flutter_assets/assets/logo.png")"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "./rustdesk/data/flutter_assets/assets/logo.png"
+
       - name: logo stuff
-        if: ${{ env.logolink_url != 'false' }}
+        if: ${{ env.logolink_url != 'false' && env.rdgen != 'release' }}
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
@@ -778,6 +819,24 @@ jobs:
           command: |
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.exe" ${{ env.apiServer }}/api/save_custom_client
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" ${{ env.apiServer }}/api/save_custom_client || true
+
+      - name: upload installers to draft release
+        if: ${{ env.rdgen == 'release' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in "./SignOutput/${{ env.filename }}.exe" "./SignOutput/${{ env.filename }}.msi"; do
+            [ -f "$f" ] || { echo "skip $f (not built)"; continue; }
+            name=$(basename "$f")
+            curl -sS --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${{ env.release_id }}/assets?name=${name}" > /dev/null
+            echo "uploaded ${name}"
+          done
 
   cleanup:
     needs: [build-for-windows-flutter]
