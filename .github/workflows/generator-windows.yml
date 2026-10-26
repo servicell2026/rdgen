@@ -493,6 +493,10 @@ jobs:
             mv ./res/icon.png ./res/icon.png.bak
             mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
             mv ./res/iconx.png ./res/icon.png
+            # Large uploads (a 1.5 MB / 2000 px PNG) hang the ui.rs step, which
+            # inlines the icon as base64; the rdgen web form shrinks icons in the
+            # browser, release mode does it here. 256 px covers every size below.
+            magick ./res/icon.png -resize '256x256>' -strip ./res/icon.png
             mv ./res/32x32.png ./res/32x32.png.bak
             mv ./res/64x64.png ./res/64x64.png.bak
             mv ./res/128x128.png ./res/128x128.png.bak
@@ -511,6 +515,7 @@ jobs:
       - name: ui.rs icon
         if: ${{ env.iconlink_url != 'false' }}
         continue-on-error: true
+        timeout-minutes: 5
         shell: bash
         run: |
           IMAGE_PATH="./res/icon.png"
